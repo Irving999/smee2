@@ -12,12 +12,18 @@ connected_clients = prometheus_client.Gauge(
     labelnames=["id"],
 )
 
+webhook_requests_total = prometheus_client.Counter(
+    "webhook_requests_total",
+    "Total incoming HTTP requests to /webhook",
+)
+
 @app.get("/")
 def root():
     return({ "message": "Welcome to the server!" })
 
 @app.post("/webhook/{id}")
 async def webhook(id: str, body: dict, request: Request):
+    webhook_requests_total.inc()
     if request.headers.get("X-API-Key") != "hello":
         raise HTTPException(status_code=403, detail="Invalid API Key")
     

@@ -22,13 +22,23 @@ invalid_webhook_requests_total = prometheus_client.Counter(
     "Total invalid HTTP requests to /webhook",
 )
 
+webhook_payload_size = prometheus_client.Histogram(
+    "webhook_payload_size",
+    "Size of incoming webhook payloads in bytes",
+    buckets=(100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, float("inf")),
+)
+
 @app.get("/")
 def root():
     return({ "message": "Welcome to the server!" })
 
 @app.post("/webhook/{id}")
 async def webhook(id: str, body: dict, request: Request):
+    raw_body = await request.body()
+    webhook_payload_size.observe(len(raw_body))
+
     webhook_requests_total.inc()
+
     if request.headers.get("X-API-Key") != "hello":
         invalid_webhook_requests_total.inc()
         raise HTTPException(status_code=403, detail="Invalid API Key")

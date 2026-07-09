@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, Request, HTTPException
 import uvicorn
 
 app = FastAPI()
@@ -10,9 +10,18 @@ def root():
     return({ "message": "Welcome to the server!" })
 
 @app.post("/webhook/{id}")
-async def webhook(id: str, body: dict):
-    for client in connected_clients.get(id, []):
+async def webhook(id: str, body: dict, request: Request):
+    if request.headers.get("X-API-Key") != "hello":
+        raise HTTPException(status_code=403, detail="Invalid API Key")
+    
+    clients = connected_clients.get(id)
+
+    if not clients:
+        raise HTTPException(status_code=404, detail="No connected clients found")
+    
+    for client in clients:
         await client.send_json(body)
+    
     return ({ "status": "ok" })
 
 @app.websocket("/tunnel/{id}")

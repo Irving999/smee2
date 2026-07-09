@@ -1,34 +1,33 @@
-from fastapi import FastAPI
-from fastapi import WebSocket
-from fastapi import Request
+from fastapi import FastAPI, WebSocket
 import uvicorn
-import json
 
 app = FastAPI()
 
-connected_clients = []
+connected_clients: dict[str, list[WebSocket]] = {}
+
 @app.get("/")
 def root():
     return({ "message": "Welcome to the server!" })
 
+@app.post("/webhook/{id}")
+async def webhook(id: str, body: dict):
+    for client in connected_clients.get(id, []):
+        await client.send_json(body)
+    return ({ "status": "ok" })
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    for client in connected_clients:
-        await client.send_text(json.dumps(data))
-
-
-
-@app.websocket("/tunnel")
-async def tunnel(websocket: WebSocket):
+@app.websocket("/tunnel/{id}")
+async def tunnel(id: str, websocket: WebSocket):
     await websocket.accept()
-    connected_clients.append(websocket)
+    connected_clients.setdefault(id, []).append(websocket)
+
     try:
         while True:
-            data = await websocket.receive_text()
+            await websocket.receive_text()
     except:
-            connected_clients.remove(websocket)
+            connected_clients[id].remove(websocket)
+            if not connected_clients[id]:
+                del connected_clients[id] 
+
 
 if __name__ == "__main__":
     uvicorn.run("main:app", port=5000, reload=True)

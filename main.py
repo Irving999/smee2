@@ -1,9 +1,16 @@
-from fastapi import FastAPI, WebSocket, Request, HTTPException
+from fastapi import FastAPI, WebSocket, Request, Response, HTTPException
+import prometheus_client
 import uvicorn
 
 app = FastAPI()
 
-connected_clients: dict[str, list[WebSocket]] = {}
+clients: dict[str, list[WebSocket]] = {}
+
+connected_clients = prometheus_client.Gauge(
+    "connected_clients",
+    "Number of clients connected to tunnel",
+    labelnames=["id"],
+)
 
 @app.get("/")
 def root():
@@ -14,12 +21,12 @@ async def webhook(id: str, body: dict, request: Request):
     if request.headers.get("X-API-Key") != "hello":
         raise HTTPException(status_code=403, detail="Invalid API Key")
     
-    clients = connected_clients.get(id)
+    client_list = clients.get(id)
 
-    if not clients:
+    if not client_list:
         raise HTTPException(status_code=404, detail="No connected clients found")
     
-    for client in clients:
+    for client in client_list:
         await client.send_json(body)
     
     return ({ "status": "ok" })
@@ -27,16 +34,25 @@ async def webhook(id: str, body: dict, request: Request):
 @app.websocket("/tunnel/{id}")
 async def tunnel(id: str, websocket: WebSocket):
     await websocket.accept()
-    connected_clients.setdefault(id, []).append(websocket)
+
+    clients.setdefault(id, []).append(websocket)
+    connected_clients.labels(id=id).inc()
 
     try:
         while True:
             await websocket.receive_text()
     except:
-            connected_clients[id].remove(websocket)
-            if not connected_clients[id]:
-                del connected_clients[id] 
+            clients[id].remove(websocket)
+            connected_clients.labels(id=id).dec()
+            if not clients[id]:
+                del clients[id]
 
+@app.get("/metrics")
+def get_metrics():
+    return Response(
+        media_type="text/plain",
+        content=prometheus_client.generate_latest(),
+    )
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", port=5000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=5000)

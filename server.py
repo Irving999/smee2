@@ -12,41 +12,18 @@ connected_clients = prometheus_client.Gauge(
     labelnames=["id"],
 )
 
-webhook_requests_total = prometheus_client.Counter(
-    "webhook_requests_total",
-    "Total incoming HTTP requests to /webhook",
-)
-
-invalid_webhook_requests_total = prometheus_client.Counter(
-    "invalid_requests_total",
-    "Total invalid HTTP requests to /webhook",
-)
-
-webhook_payload_size = prometheus_client.Histogram(
-    "webhook_payload_size",
-    "Size of incoming webhook payloads in bytes",
-    buckets=(100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, float("inf")),
-)
-
 @app.get("/")
 def root():
     return({ "message": "Welcome to the server!" })
 
 @app.post("/webhook/{id}")
 async def webhook(id: str, body: dict, request: Request):
-    raw_body = await request.body()
-    webhook_payload_size.observe(len(raw_body))
-
-    webhook_requests_total.inc()
-
     if request.headers.get("X-API-Key") != "hello":
-        invalid_webhook_requests_total.inc()
         raise HTTPException(status_code=403, detail="Invalid API Key")
     
     client_list = clients.get(id)
 
     if not client_list:
-        invalid_webhook_requests_total.inc()
         raise HTTPException(status_code=404, detail="No connected clients found")
     
     for client in client_list:

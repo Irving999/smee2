@@ -50,6 +50,7 @@ async def webhook(subscription_id: str, request: Request):
             raise HTTPException(status_code=403, detail="API key is not valid ")
 
         data = await request.json()
+        event_type = request.headers.get("X-GitHub-Event")
         
         raw_body = await request.body()
         webhook_payload_size.observe(len(raw_body))
@@ -64,7 +65,7 @@ async def webhook(subscription_id: str, request: Request):
             raise HTTPException(status_code=404, detail="No connected clients found")
 
         for client in client_list:
-            await client.send_json(data) 
+            await client.send_json({"event": event_type, "payload": data}) 
             print("Data sent to websocket client")
         return {"message":"received"}  
      

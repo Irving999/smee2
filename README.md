@@ -22,8 +22,9 @@ pip install -r requirements.txt
 
 ## Run
 
-```powershell
-python main.py
+```sh
+# add -vvv for verbose logging
+python server.py
 ```
 
 The server runs at `http://127.0.0.1:5000`.

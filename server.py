@@ -1,103 +1,107 @@
-from fastapi import FastAPI, WebSocket, Request, Response, HTTPException
-import prometheus_client
+from fastapi import FastAPI, WebSocket, Request, HTTPException, Response
 import uvicorn
+import collections
 import logging
+import prometheus_client
+from args import get_args
+
+args = get_args()
 
 logging.basicConfig(
+    # in mondo we trust
     format="%(asctime)s.%(msecs)03dZ %(levelname)s:%(name)s:%(message)s",
     datefmt="%Y-%m-%dT%H:%M:%S",
-    level=logging.INFO,
+    level=logging.ERROR - (args.verbose * 10),
 )
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.error").setLevel(logging.WARNING)
 
-app = FastAPI()
+logger = logging.getLogger(__name__)
 
-clients: dict[str, list[WebSocket]] = {}
-subscribers = {}
+app = FastAPI()
 
 connected_clients = prometheus_client.Gauge(
     "connected_clients",
-    "Number of clients connected to a tunnel",
-    labelnames=["subscription_id"],
+    "Number of connected websocket clients per subscription",
+    ["subscription_id"],
 )
 
-webhook_requests_total = prometheus_client.Counter(
-    "webhook_requests_total",
-    "Total incoming HTTP requests to /webhook",
+failed_connections = prometheus_client.Counter(
+    "failed_connections",
+    "Number of failed connection attempts to /tunnel",
+    ["subscription_id", "reason"],
 )
 
-invalid_webhook_requests_total = prometheus_client.Counter(
-    "invalid_requests_total",
-    "Total invalid HTTP requests to /webhook",
-)
+clients = collections.defaultdict(list)
 
-webhook_payload_size = prometheus_client.Histogram(
-    "webhook_payload_size",
-    "Size of incoming webhook payloads in bytes",
-    buckets=(100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, float("inf")),
-)
+subscribers = {}
 
 @app.post("/webhook/{subscription_id}")
 async def webhook(subscription_id: str, request: Request):
-    webhook_requests_total.inc()
-
     if subscription_id is not None:
         header_val = request.headers.get("X-API-Key")
-
         if (header_val != "hello"):
-            invalid_webhook_requests_total.inc()
             raise HTTPException(status_code=403, detail="API key is not valid ")
 
         data = await request.json()
-        event_type = request.headers.get("X-GitHub-Event")
-        
-        raw_body = await request.body()
-        webhook_payload_size.observe(len(raw_body))
-
-        logging.info("Webhook received: %s", data)
+        logger.debug("Data pushed to webhook %s, received: %s", subscription_id, data)
 
         subscribers[subscription_id] = data
-        client_list = clients.get(subscription_id)
-
-        if not client_list:
-            invalid_webhook_requests_total.inc()
-            raise HTTPException(status_code=404, detail="No connected clients found")
-
-        for client in client_list:
-            await client.send_json({"event": event_type, "payload": data}) 
-            print("Data sent to websocket client")
+        
+        for client in clients.get(subscription_id, []):
+            await client.send_json(data)
+        
+        logger.error("Data sent to websocket client")
         return {"message":"received"}  
-     
+    
     else:   
-        print("Invalid endpoint, connection not accepted")
+        logger.error("Invalid subscription '%s', connection not accepted", subscription_id)
         return
     
     
 @app.websocket("/tunnel/{subscription_id}")
 async def websocket_endpoint(subscription_id: str, websocket: WebSocket):
-    await websocket.accept()
+    api_key = websocket.headers.get("X-API-Key")
+    
+    if (api_key != "hello"):
+        failed_connections.labels(
+            subscription_id=subscription_id,
+            reason="bad_api_key",
+        ).inc()
+        await websocket.close(code=1008)
+        return
 
-    clients.setdefault(subscription_id, []).append(websocket)
-    connected_clients.labels(subscription_id=subscription_id).inc()
+    await websocket.accept()
+    
+    connected_clients.labels(subscription_id).inc()
+    
+    clients[subscription_id].append(websocket)
+
+    logger.debug(f"Websocket connection successfully established at id: {subscription_id}")
     
     try:
         while True:
-            await websocket.receive_text()
+            data = await websocket.receive_text()
             await websocket.send_text("Message received")
-    except:
+    except Exception as e:
+        failed_connections.labels(
+            subscription_id=subscription_id,
+            reason="websocket_receive_failed",
+        ).inc()
+        connected_clients.labels(subscription_id).dec()
         clients[subscription_id].remove(websocket)
-        connected_clients.labels(subscription_id=subscription_id).dec()
-
         if not clients[subscription_id]:
-            del clients[subscription_id]
+            clients.pop(subscription_id, None)
+
+        logger.debug(f"Websocket connection disconnected at id: {subscription_id}")
+            
 
 @app.get("/metrics")
 def get_metrics():
     return Response(
-        media_type="text/plain",
         content=prometheus_client.generate_latest(),
+        media_type="text/plain",
     )
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=5000) 
+    uvicorn.run("server:app", host="0.0.0.0", port=5000)
